@@ -99,6 +99,11 @@ end
 -- swings[guid] = { last = <GetTime>, period = <sec|nil>, samples = {}, name = "" }
 local swings = {}
 
+-- tankHitters[mobGUID] = last time that mob damaged the tank (range-independent
+-- count source, since nameplates only exist for nearby mobs)
+local tankHitters = {}
+local HITTER_WINDOW = 5   -- seconds since last hit before a mob stops counting
+
 -- forward declarations (used by the combat log handler, defined lower down)
 local currentTankGUID, currentTankMaxHP
 local triggerBigHit
@@ -156,6 +161,17 @@ local function onCombatLog()
     if missType == "PARRY" and isTrackableEnemy(dstGUID) then
       applyParryHaste(dstGUID)
     end
+  end
+
+  -- --- track mobs hitting the tank (range-independent adds count) -------
+  if sub == "UNIT_DIED" or sub == "PARTY_KILL" then
+    tankHitters[dstGUID] = nil
+  elseif currentTankGUID and dstGUID == currentTankGUID and isTrackableEnemy(srcGUID)
+     and (sub == "SWING_DAMAGE" or sub == "SWING_MISSED"
+       or sub == "SPELL_DAMAGE"  or sub == "SPELL_MISSED"
+       or sub == "RANGE_DAMAGE"  or sub == "RANGE_MISSED"
+       or sub == "SPELL_PERIODIC_DAMAGE") then
+    tankHitters[srcGUID] = GetTime()
   end
 
   -- --- big hit on the tank ---------------------------------------------
@@ -263,20 +279,33 @@ local function resolveTankUnit()
   return nil
 end
 
--- A mob counts as "on the tank" if its current target is the tank, OR (when we
--- have a live tank unit) the threat API says the tank is its top threat. The
--- threat check is the reliable one -- nameplate target tokens are flaky in Classic.
+-- Distinct mobs on the tank = union of:
+--   a) creatures that have damaged the tank in the last HITTER_WINDOW seconds
+--      (from the combat log -- works at any range), and
+--   b) visible nameplate mobs whose target/top-threat is the tank
+--      (catches in-range mobs that haven't swung yet).
+-- Returns count, or nil if we don't know who the tank is.
 local function countAddsOnTank(tankGUID, tankUnit)
   if not tankGUID and not tankUnit then return nil end
-  local count = 0
+
+  local now  = GetTime()
+  local seen = {}
+  for g, t in pairs(tankHitters) do
+    if now - t <= HITTER_WINDOW then seen[g] = true
+    else tankHitters[g] = nil end
+  end
+
   for _, plate in ipairs(C_NamePlate.GetNamePlates()) do
     local u = plateUnit(plate)
     if u and UnitCanAttack("player", u) and not UnitIsDead(u) then
       local byTarget = tankGUID and UnitGUID(u .. "target") == tankGUID
       local byThreat = tankUnit and (UnitThreatSituation(u, tankUnit) or 0) >= 2
-      if byTarget or byThreat then count = count + 1 end
+      if byTarget or byThreat then seen[UnitGUID(u) or u] = true end
     end
   end
+
+  local count = 0
+  for _ in pairs(seen) do count = count + 1 end
   return count
 end
 
@@ -580,7 +609,12 @@ SlashCmdList.PALLYHELPER = function(msg)
             tt, tostring(thr), tostring(hit and true or false)))
       end
     end
-    pos(("=> enemies=%d onTank=%d"):format(enemies, onTank))
+    local hitters, now = 0, GetTime()
+    for _, t in pairs(tankHitters) do
+      if now - t <= HITTER_WINDOW then hitters = hitters + 1 end
+    end
+    pos(("=> nameplate onTank=%d | combatlog hitters(<%ds)=%d | shown=%s")
+        :format(onTank, HITTER_WINDOW, hitters, tostring(countAddsOnTank(guid, unit))))
 
   elseif cmd == "reset" then
     wipe(DB)                                   -- also clears nil-by-default keys
@@ -618,7 +652,10 @@ boot:SetScript("OnEvent", function(_, event, arg1)
 
     local cl = CreateFrame("Frame")
     cl:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-    cl:SetScript("OnEvent", onCombatLog)
+    cl:RegisterEvent("PLAYER_REGEN_ENABLED")   -- combat ended
+    cl:SetScript("OnEvent", function(_, e)
+      if e == "PLAYER_REGEN_ENABLED" then wipe(tankHitters) else onCombatLog() end
+    end)
 
     -- keep target weapon-speed fresh if it changes (slows/haste on the boss)
     local sp = CreateFrame("Frame")

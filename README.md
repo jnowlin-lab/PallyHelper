@@ -31,16 +31,19 @@ In game run:
 
 Put that number in the first line of `PallyHelper.toc` (`## Interface:`).
 
-### Nameplates must be on for the adds counter
+### How the adds counter works
 
-The counter reads **enemy nameplates**, so enable them (default key `V`, or
-Interface > Names > Enemy Units > Nameplates). Only mobs with a visible
-nameplate are counted, so it is a "how many adds near me are on the tank"
-gauge, not a full raid-wide threat table.
+Enemy nameplates (default key `V`) help but are **not required**. The count is
+the union of two sources:
 
-A mob is counted as "on the tank" if its target is the tank **or** the threat
-API reports the tank as its top threat (status ≥ 2). The threat path is the
-reliable one — nameplate target tokens are unreliable in Classic.
+1. **Combat log** — any creature that has damaged the tank in the last 5s.
+   Range-independent, so it works even when you're healing from the back and
+   the mobs have no nameplate. This is the main source.
+2. **Nameplates** — visible mobs whose target or top threat (status ≥ 2) is the
+   tank. Adds in-range mobs that haven't swung yet.
+
+Because source 1 needs the tank hit at least once, a brand-new add shows up
+about one swing after it reaches the tank.
 
 **The tank** is resolved in this order: `/ph settank` → a group member with the
 `TANK` role assigned → *(fallback)* the unit your hostile target is attacking
