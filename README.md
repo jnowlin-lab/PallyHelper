@@ -138,8 +138,11 @@ read max health; the crushing/crit checks work regardless.
 
 - **First ~2 swings** have no measured period – it assumes 2.0s and shows a
   `~` until it has data.
-- **Parry-haste** (boss parries the tank → its next swing is sooner) is only
-  *approximated*. Fights where the tank parries a lot will drift.
+- **Parry-haste** (boss parries the tank → its next swing is sooner) is modelled
+  with the real rule: a parry shaves 40% of the weapon speed off the swing
+  timer, floored at 20% remaining, and never delays a swing. Stacks per parry.
+  A yellow `⚡` shows on the bar for ~0.6s when it fires. Still approximate — it
+  uses the measured/locked period as "weapon speed".
 - **Dynamic haste** other than Bloodlust/Heroism/Power Infusion is not
   modelled. Use `/ph casttime` to fine-tune, or add spell IDs to
   `HASTE_BUFFS` in the Lua.
@@ -155,8 +158,6 @@ read max health; the crushing/crit checks work regardless.
 - [ ] Big-hit alert: also watch consecutive non-crush hits that stack into a danger window.
 - [ ] Show a second bar for `boss1` while your target is an add.
 - [ ] Per-boss saved weapon speeds (skip the 2-swing warmup).
-- [ ] Better parry-haste model (track the tank's parry events + 40%/20% rule).
-- [ ] "Time to next danger swing" using recent hit sizes vs tank health.
 - [ ] Option to also count adds targeting *you* (holy pally pulls via heals).
 - [ ] Ace3 options panel instead of slash commands.
 - [ ] Sound/where-to via LibSharedMedia; TellMeWhen-style glow on the action button.

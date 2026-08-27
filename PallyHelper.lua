@@ -140,16 +140,22 @@ local function recordSwing(guid, name)
   end
 end
 
--- Approximate parry-haste: boss parried the tank, so its next swing comes
--- sooner (~40% off the remaining timer, floored near 20%). Not exact.
+-- Parry-haste: when a mob parries, 40% of its weapon speed is shaved off the
+-- current swing timer, but it can't be pushed below 20% of the weapon speed
+-- remaining. If the swing is already inside that 20% floor, a parry does
+-- nothing (it must never *delay* the swing). Multiple parries in one cycle
+-- stack because each call re-reads the current timer.
 local function applyParryHaste(guid)
   local s = swings[guid]
   if not s then return end
-  local now    = GetTime()
-  local period = s.period or 2.0
-  local nextSw = s.last + period
-  local hasted = math.max(now + 0.20 * period, nextSw - 0.40 * period)
-  s.last = hasted - period
+  local now       = GetTime()
+  local period    = (DB and DB.fixedPeriod) or s.period or 2.0
+  if period < 0.3 then period = 2.0 end
+  local remaining = (s.last + period) - now
+  if remaining <= 0.20 * period then return end
+  local newRemaining = math.max(0.20 * period, remaining - 0.40 * period)
+  s.last   = now + newRemaining - period   -- so (s.last + period) == now + newRemaining
+  s.parryAt = now
 end
 
 local function onCombatLog()
@@ -638,9 +644,12 @@ local function updateDisplay(elapsed)
   if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
   bar:SetValue(frac)
 
+  -- brief bolt when a parry just hastened this swing
+  local parryTag = (s.parryAt and (now - s.parryAt) < 0.6) and "|cffffcc00\226\154\161|r " or ""
+
   if castNow then
     bar:SetStatusBarColor(0.1, 1, 0.1)
-    barText:SetFormattedText("CAST NOW  (%.1f)", remain)
+    barText:SetFormattedText("%sCAST NOW  (%.1f)", parryTag, remain)
     if not wasCastNow then
       flashAlpha = 0.55                        -- silent visual pop on the rising edge
       if DB.sound and lastSoundSwing ~= s.last then
@@ -650,7 +659,7 @@ local function updateDisplay(elapsed)
     end
   else
     bar:SetStatusBarColor(0.2, 0.4, 1)
-    barText:SetFormattedText("%s%.1fs -> next hit", estimate and "~" or "", remain)
+    barText:SetFormattedText("%s%s%.1fs -> next hit", parryTag, estimate and "~" or "", remain)
   end
   wasCastNow = castNow
 
