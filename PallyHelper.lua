@@ -574,8 +574,9 @@ SlashCmdList.PALLYHELPER = function(msg)
                        and ((guid and UnitGUID(u .. "target") == guid) or (thr and thr >= 2))
         if canAtk then enemies = enemies + 1 end
         if hit then onTank = onTank + 1 end
-        pos(("  #%d %s=%s atk=%s dead=%s tgt=%s thr=%s hit=%s"):format(i,
-            u, tostring(UnitName(u)), tostring(canAtk), tostring(UnitIsDead(u)),
+        pos(("  #%d %s=%s atk=%s react=%s combat=%s tgt=%s thr=%s hit=%s"):format(i,
+            u, tostring(UnitName(u)), tostring(canAtk),
+            tostring(UnitReaction("player", u)), tostring(UnitAffectingCombat(u)),
             tt, tostring(thr), tostring(hit and true or false)))
       end
     end
