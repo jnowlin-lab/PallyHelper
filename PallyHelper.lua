@@ -228,10 +228,11 @@ end
 
 -- Returns: unitToken (or nil), guid (or nil), name (or nil)
 local function resolveTankUnit()
+  -- 1. explicit /ph settank
   if DB.tankGUID then
     return guidToUnit(DB.tankGUID), DB.tankGUID, DB.tankName
   end
-  -- Auto: first group member whose assigned role is TANK.
+  -- 2. first group member whose assigned role is TANK
   local function scan(prefix, count)
     for i = 1, count do
       local u = prefix .. i
@@ -240,20 +241,31 @@ local function resolveTankUnit()
       end
     end
   end
-  if IsInRaid() then return scan("raid", 40)
-  elseif IsInGroup() then return scan("party", 4) end
+  local u, g, n
+  if IsInRaid() then u, g, n = scan("raid", 40)
+  elseif IsInGroup() then u, g, n = scan("party", 4) end
+  if u then return u, g, n end
+  -- 3. fallback: whoever your hostile target is swinging at is probably the tank
+  if UnitExists("target") and UnitCanAttack("player", "target")
+     and UnitExists("targettarget") and not UnitCanAttack("player", "targettarget")
+     and not UnitIsUnit("targettarget", "player") then
+    return "targettarget", UnitGUID("targettarget"), UnitName("targettarget")
+  end
   return nil
 end
 
-local function countAddsOnTank(tankGUID)
-  if not tankGUID then return nil end
+-- A mob counts as "on the tank" if its current target is the tank, OR (when we
+-- have a live tank unit) the threat API says the tank is its top threat. The
+-- threat check is the reliable one -- nameplate target tokens are flaky in Classic.
+local function countAddsOnTank(tankGUID, tankUnit)
+  if not tankGUID and not tankUnit then return nil end
   local count = 0
   for _, plate in ipairs(C_NamePlate.GetNamePlates()) do
     local u = plate.namePlateUnitToken
     if u and UnitCanAttack("player", u) and not UnitIsDead(u) then
-      if UnitGUID(u .. "target") == tankGUID then
-        count = count + 1
-      end
+      local byTarget = tankGUID and UnitGUID(u .. "target") == tankGUID
+      local byThreat = tankUnit and (UnitThreatSituation(u, tankUnit) or 0) >= 2
+      if byTarget or byThreat then count = count + 1 end
     end
   end
   return count
@@ -360,7 +372,7 @@ local function updateDisplay(elapsed)
     currentTankGUID  = guid
     cachedTankName   = name
     if unit then currentTankMaxHP = UnitHealthMax(unit) end   -- keep last known if out of range
-    cachedAdds = countAddsOnTank(guid)
+    cachedAdds = countAddsOnTank(guid, unit)
   end
 
   -- --- big-hit alert -------------------------------------------------------
@@ -531,6 +543,29 @@ SlashCmdList.PALLYHELPER = function(msg)
       pos("usage: /ph bigpct <percent>  (e.g. 22)")
     end
 
+  elseif cmd == "diag" then
+    local unit, guid, name = resolveTankUnit()
+    pos(("tank: %s  guid=%s  unit=%s"):format(tostring(name), tostring(guid), tostring(unit)))
+    pos(("in group=%s  in raid=%s  enemy nameplates CVar=%s")
+        :format(tostring(IsInGroup()), tostring(IsInRaid()), tostring(GetCVar("nameplateShowEnemies"))))
+    local plates = C_NamePlate.GetNamePlates()
+    pos("visible nameplates: " .. #plates)
+    local enemies, onTank = 0, 0
+    for _, p in ipairs(plates) do
+      local u = p.namePlateUnitToken
+      if u and UnitCanAttack("player", u) then
+        enemies = enemies + 1
+        local tt = u .. "target"
+        local ttName = UnitExists(tt) and (UnitName(tt) or "?") or "NONE"
+        local thr = unit and UnitThreatSituation(u, unit)
+        local hit = (guid and UnitGUID(tt) == guid) or (thr and thr >= 2)
+        if hit then onTank = onTank + 1 end
+        pos(("  %s | tgt=%s | threatVsTank=%s | onTank=%s")
+            :format(UnitName(u) or "?", ttName, tostring(thr), tostring(hit and true or false)))
+      end
+    end
+    pos(("=> enemy nameplates=%d  on tank=%d"):format(enemies, onTank))
+
   elseif cmd == "reset" then
     wipe(DB)                                   -- also clears nil-by-default keys
     for k, v in pairs(DEFAULTS) do DB[k] = v end
@@ -542,7 +577,7 @@ SlashCmdList.PALLYHELPER = function(msg)
 
   else
     pos("commands: (none)=toggle  lock  settank  cleartank  spell flash|holy  casttime <ms>|auto  offset <s>  sound")
-    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  reset")
+    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  diag  reset")
   end
 end
 

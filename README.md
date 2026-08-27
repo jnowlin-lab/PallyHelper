@@ -38,6 +38,15 @@ Interface > Names > Enemy Units > Nameplates). Only mobs with a visible
 nameplate are counted, so it is a "how many adds near me are on the tank"
 gauge, not a full raid-wide threat table.
 
+A mob is counted as "on the tank" if its target is the tank **or** the threat
+API reports the tank as its top threat (status ≥ 2). The threat path is the
+reliable one — nameplate target tokens are unreliable in Classic.
+
+**The tank** is resolved in this order: `/ph settank` → a group member with the
+`TANK` role assigned → *(fallback)* the unit your hostile target is attacking
+(`targettarget`). If none of those work the display shows `n/a` — run
+`/ph diag` to see what's missing.
+
 ---
 
 ## Commands
@@ -56,6 +65,7 @@ gauge, not a full raid-wide threat table.
 | `/ph bighit` | toggle the big-hit **HEAL NOW** alert (on by default) |
 | `/ph bigsound` | toggle the big-hit sound (on by default – it's a rare event, so it isn't the annoying one) |
 | `/ph bigpct <percent>` | alert on any hit ≥ this % of the tank's max health (default 22) |
+| `/ph diag` | dump tank/nameplate/threat state to chat (use when the adds count looks wrong) |
 | `/ph reset` | reset settings + position |
 
 ---
