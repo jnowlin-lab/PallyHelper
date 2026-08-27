@@ -10,6 +10,9 @@ Holy Paladin helper for **WoW TBC / Anniversary (2.5.x)**.
 - **Danger-swing warning** – the swing bar goes red **!! LETHAL !!** when the
   tank's current health is at or below the biggest melee hit they've taken this
   fight (× a headroom factor) — i.e. the next swing could kill them.
+- **Action-button glow** – the Blizzard spell-alert glow lights up your Flash /
+  Holy Light action button during the CAST NOW window, so you don't have to
+  watch the bar.
 - **Adds-on-tank counter** – how many mobs are on the tank (combat-log based,
   works at any range).
 - **Tank-debuff watch** – a line when the tank has a debuff that makes it take
@@ -79,6 +82,7 @@ about one swing after it reaches the tank.
 | `/ph debuffs` | toggle the tank-debuff watch line (on by default) |
 | `/ph danger` | toggle the **!! LETHAL !!** danger-swing warning (on by default) |
 | `/ph dangerfactor <n>` | headroom on the danger check (default 1.15) |
+| `/ph glow` | toggle the action-button glow; reports how many buttons it found |
 | `/ph diag` | dump tank/nameplate/threat/debuff/danger state to chat |
 | `/ph reset` | reset settings + position |
 
@@ -110,6 +114,18 @@ is given (casts delay the next swing, so timing a heal into it is unreliable).
 The gap that spans a cast is not used as a swing-period sample. When the cast
 ends the normal prediction resumes and recalibrates on the next real swing.
 Cast detection needs a unit for the boss (`target`, `boss1..4`, or `focus`).
+
+## How the action-button glow works
+
+On login and whenever your bars change (`ACTIONBAR_SLOT_CHANGED`,
+`LEARNED_SPELL_IN_TAB`, `UPDATE_MACROS`), it scans the standard action bars plus
+Bartender4 / Dominos / ElvUI button names for a slot holding the advisor spell
+(`Flash of Light` or `Holy Light`). During the CAST NOW / LETHAL window it calls
+`ActionButton_ShowOverlayGlow` on those buttons and hides it otherwise.
+
+`/ph glow` toggles it and tells you how many buttons it matched — `0` means the
+spell isn't on a recognised bar (macros aren't parsed). Only the exact spell is
+matched, so a macro or a different rank on the bar won't glow.
 
 ## How the danger-swing warning works
 
@@ -176,10 +192,9 @@ read max health; the crushing/crit checks work regardless.
 
 ## Roadmap (things we can add next)
 
-- [ ] Detect the tank automatically as "the unit the boss is targeting".
-- [ ] Big-hit alert: also watch consecutive non-crush hits that stack into a danger window.
 - [ ] Show a second bar for `boss1` while your target is an add.
 - [ ] Per-boss saved weapon speeds (skip the 2-swing warmup).
 - [ ] Option to also count adds targeting *you* (holy pally pulls via heals).
 - [ ] Ace3 options panel instead of slash commands.
-- [ ] Sound/where-to via LibSharedMedia; TellMeWhen-style glow on the action button.
+- [ ] Parse macros when matching the glow button.
+- [ ] Sound/media via LibSharedMedia.

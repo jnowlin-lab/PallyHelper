@@ -37,6 +37,7 @@ local DEFAULTS = {
   tankDebuffWatch = true,     -- show a line when the tank has an armor/damage-taken/-healing debuff
   dangerWarn      = true,     -- flag the swing bar red when the next hit could kill the tank
   dangerFactor    = 1.15,    -- "lethal" if tank HP <= recent biggest melee hit * this
+  buttonGlow      = true,     -- glow the Flash/Holy Light action button during CAST NOW
   tankGUID        = nil,
   tankName        = nil,
   point           = { "CENTER", "CENTER", 0, 150 },  -- { point, relativePoint, x, y }
@@ -546,6 +547,52 @@ local function applyLockVisual()
   anchorBG:SetShown(not DB.locked)
 end
 
+--=========================================================================
+-- Action-button glow on the advisor spell (Blizzard spell-alert overlay)
+--=========================================================================
+local GLOW_BAR_PREFIXES = {
+  "ActionButton", "BonusActionButton", "MultiBarBottomLeftButton",
+  "MultiBarBottomRightButton", "MultiBarRightButton", "MultiBarLeftButton",
+  "BT4Button", "DominosActionButton",
+  "ElvUI_Bar1Button", "ElvUI_Bar2Button", "ElvUI_Bar3Button",
+  "ElvUI_Bar4Button", "ElvUI_Bar5Button", "ElvUI_Bar6Button",
+}
+local glowButtons, glowIsOn = {}, false
+
+local function advisorSpellName()
+  return (DB and DB.spell == "holy") and "Holy Light" or "Flash of Light"
+end
+
+local function refreshGlowButtons()
+  wipe(glowButtons)
+  local want = GetSpellInfo(advisorSpellName())
+  if not want then return end
+  for _, pfx in ipairs(GLOW_BAR_PREFIXES) do
+    for i = 1, 12 do
+      local b = _G[pfx .. i]
+      if b then
+        local slot = tonumber(b.action or (b.GetAttribute and b:GetAttribute("action")))
+        if slot and HasAction(slot) then
+          local atype, id = GetActionInfo(slot)
+          if atype == "spell" and id and GetSpellInfo(id) == want then
+            glowButtons[#glowButtons + 1] = b
+          end
+        end
+      end
+    end
+  end
+end
+
+local function setButtonGlow(on)
+  on = on and true or false
+  if on == glowIsOn then return end
+  glowIsOn = on
+  if on and #glowButtons == 0 then refreshGlowButtons() end
+  local fn = on and ActionButton_ShowOverlayGlow or ActionButton_HideOverlayGlow
+  if not fn then return end
+  for _, b in ipairs(glowButtons) do pcall(fn, b) end
+end
+
 local lastSoundSwing
 local wasCastNow = false
 local wasDanger = false
@@ -634,6 +681,7 @@ local function updateDisplay(elapsed)
     barText:SetText("no swing data")
     marker:Hide()
     wasCastNow, wasDanger = false, false
+    setButtonGlow(false)
     return
   end
 
@@ -647,6 +695,7 @@ local function updateDisplay(elapsed)
     barText:SetFormattedText("CASTING: %s  %.1fs", castName, castLeft)
     marker:Hide()
     wasCastNow, wasDanger = false, false
+    setButtonGlow(false)
     if flashAlpha > 0 then
       flashAlpha = math.max(0, flashAlpha - (elapsed or 0) * 2.2)
       flash:SetAlpha(flashAlpha)
@@ -702,6 +751,7 @@ local function updateDisplay(elapsed)
   end
   wasCastNow = castNow
   wasDanger  = danger and true or false
+  setButtonGlow(DB.buttonGlow and (castNow or danger))
 
   if flashAlpha > 0 then
     flashAlpha = math.max(0, flashAlpha - (elapsed or 0) * 2.2)   -- ~0.25s fade
@@ -731,6 +781,7 @@ SlashCmdList.PALLYHELPER = function(msg)
   if cmd == "" then
     DB.shown = not DB.shown
     anchor:SetShown(DB.shown)
+    if not DB.shown then setButtonGlow(false) end
     pos(DB.shown and "shown" or "hidden")
 
   elseif cmd == "lock" then
@@ -755,6 +806,8 @@ SlashCmdList.PALLYHELPER = function(msg)
     rest = rest:lower()
     if rest == "flash" or rest == "holy" then
       DB.spell = rest
+      setButtonGlow(false)
+      refreshGlowButtons()
       pos("advisor spell = " .. rest)
     else
       pos("usage: /ph spell flash | holy")
@@ -804,6 +857,17 @@ SlashCmdList.PALLYHELPER = function(msg)
   elseif cmd == "danger" then
     DB.dangerWarn = not DB.dangerWarn
     pos("danger-swing warning " .. (DB.dangerWarn and "on" or "off"))
+
+  elseif cmd == "glow" then
+    DB.buttonGlow = not DB.buttonGlow
+    if DB.buttonGlow then
+      refreshGlowButtons()
+      pos(("action-button glow on (%d button(s) found for %s)")
+          :format(#glowButtons, advisorSpellName()))
+    else
+      setButtonGlow(false)
+      pos("action-button glow off")
+    end
 
   elseif cmd == "dangerfactor" then
     local n = tonumber(rest)
@@ -871,7 +935,7 @@ SlashCmdList.PALLYHELPER = function(msg)
 
   else
     pos("commands: (none)=toggle  lock  settank  cleartank  spell flash|holy  casttime <ms>|auto  offset <s>  sound")
-    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  debuffs  danger  dangerfactor <n>  diag  reset")
+    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  debuffs  danger  dangerfactor <n>  glow  diag  reset")
   end
 end
 
@@ -916,6 +980,15 @@ boot:SetScript("OnEvent", function(_, event, arg1)
         if v and v > 0 then s.period = v end
       end
     end)
+
+    -- re-find which action button(s) hold the advisor spell
+    local abf = CreateFrame("Frame")
+    abf:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
+    abf:RegisterEvent("LEARNED_SPELL_IN_TAB")
+    abf:RegisterEvent("PLAYER_ENTERING_WORLD")
+    abf:RegisterEvent("UPDATE_MACROS")
+    abf:SetScript("OnEvent", function() refreshGlowButtons() end)
+    refreshGlowButtons()
 
     pos("loaded. /ph for options.")
   end
