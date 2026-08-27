@@ -7,8 +7,11 @@ Holy Paladin helper for **WoW TBC / Anniversary (2.5.x)**.
 - **Big-hit alert** – flashes a red **HEAL NOW** over the bar the instant the
   tank eats a crushing blow, a melee crit, a big special, or any hit over a
   set % of their health.
-- **Adds-on-tank counter** – counts visible enemy nameplates whose current
-  target is the tank.
+- **Adds-on-tank counter** – how many mobs are on the tank (combat-log based,
+  works at any range).
+- **Tank-debuff watch** – a line when the tank has an armor-shred, damage-taken,
+  or healing-reduction debuff (Sunder stacks, Faerie Fire, Meteor Slash, Mark
+  of Hydross, Enfeeble, Mortal Strike, …).
 
 ---
 
@@ -68,7 +71,8 @@ about one swing after it reaches the tank.
 | `/ph bighit` | toggle the big-hit **HEAL NOW** alert (on by default) |
 | `/ph bigsound` | toggle the big-hit sound (on by default – it's a rare event, so it isn't the annoying one) |
 | `/ph bigpct <percent>` | alert on any hit ≥ this % of the tank's max health (default 22) |
-| `/ph diag` | dump tank/nameplate/threat state to chat (use when the adds count looks wrong) |
+| `/ph debuffs` | toggle the tank-debuff watch line (on by default) |
+| `/ph diag` | dump tank/nameplate/threat/debuff state to chat |
 | `/ph reset` | reset settings + position |
 
 ---
@@ -92,6 +96,19 @@ have no target.
 Most TBC bosses swing on a flat **2.0s** timer, so that is the fallback and the
 value you'd lock with `/ph fixedperiod 2.0`. Measuring still matters for
 dual-wielders, and for bosses that get hasted or slowed mid-fight.
+
+## How the tank-debuff watch works
+
+Every ~0.15s it scans the tank's debuffs (needs a live unit for the tank — in
+your group, or the `targettarget` fallback). A debuff is flagged if:
+
+- its name is in the built-in list (`AMP_BY_NAME` in the Lua — armor shred,
+  raid damage-taken amps, healing-reduction), **or**
+- its tooltip text contains "damage taken … increas…" or "armor … reduc…".
+
+The single most severe one is shown as `⚠ <name> xN` (N = stacks). Tooltip
+results are cached per spell, so the scan is cheap after the first sighting.
+Add missing spells to `AMP_BY_NAME` with a severity number.
 
 ## How the big-hit alert works
 

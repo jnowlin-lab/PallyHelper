@@ -34,6 +34,7 @@ local DEFAULTS = {
   bigHitSound     = true,     -- rare event, so a distinct sound is on by default; /ph bigsound to mute
   bigHitPct       = 0.22,     -- also alert on any hit >= this fraction of the tank's max health
   bigHitDuration  = 1.6,      -- how long the alert stays up (seconds)
+  tankDebuffWatch = true,     -- show a line when the tank has an armor/damage-taken/-healing debuff
   tankGUID        = nil,
   tankName        = nil,
   point           = { "CENTER", "CENTER", 0, 150 },  -- { point, relativePoint, x, y }
@@ -310,10 +311,80 @@ local function countAddsOnTank(tankGUID, tankUnit)
 end
 
 --=========================================================================
+-- Tank debuff watch  --  "is the tank taking extra damage right now?"
+--=========================================================================
+-- name (lowercased) -> { short label, severity }.  Higher severity wins the
+-- one line we show.  Covers armor shred, damage-taken amps, and (because a
+-- healer must know) healing-reduction debuffs.
+local AMP_BY_NAME = {
+  ["enfeeble"]              = { "ENFEEBLE - heals capped!", 100 }, -- Prince Malchezaar
+  ["mortal strike"]        = { "Mortal Strike (-50% heals)", 92 },
+  ["mortal wound"]         = { "Mortal Wound (-healing)",    92 },
+  ["aimed shot"]           = { "Aimed Shot (-50% heals)",    90 },
+  ["wound poison"]         = { "Wound Poison (-healing)",    88 },
+  ["meteor slash"]         = { "Meteor Slash",               82 }, -- Brutallus
+  ["flame buffet"]         = { "Flame Buffet",               78 }, -- Al'ar
+  ["mark of hydross"]      = { "Mark of Hydross",            78 },
+  ["mark of corruption"]   = { "Mark of Corruption",         78 }, -- Hydross
+  ["sonic boom"]           = { "Sonic Boom",                 62 },
+  ["curse of recklessness"]= { "Curse of Recklessness",      45 },
+  ["annihilator"]          = { "Annihilator (armor)",        42 },
+  ["faerie fire"]          = { "Faerie Fire",                40 },
+  ["expose armor"]         = { "Expose Armor",               38 },
+  ["sunder armor"]         = { "Sunder Armor",               32 },
+}
+
+local scanTip = CreateFrame("GameTooltip", "PallyHelperScanTip", nil, "GameTooltipTemplate")
+scanTip:SetOwner(UIParent, "ANCHOR_NONE")
+
+local ampCache = {}   -- spellId -> bool (tooltip says "damage taken increased" / "armor reduced")
+
+local function tooltipSaysAmp(unit, index)
+  scanTip:SetOwner(UIParent, "ANCHOR_NONE")
+  scanTip:ClearLines()
+  scanTip:SetUnitDebuff(unit, index)
+  for i = 2, scanTip:NumLines() do
+    local fs = _G["PallyHelperScanTipTextLeft" .. i]
+    local t  = fs and fs:GetText()
+    if t then
+      t = t:lower()
+      if (t:find("damage taken") and t:find("increas"))
+         or (t:find("armor") and (t:find("reduc") or t:find("decreas") or t:find("lower"))) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- Returns: label (or nil), stackCount
+local function scanTankDebuffs(unit)
+  if not unit or not UnitExists(unit) then return nil end
+  local bestLabel, bestSev, bestStacks
+  for i = 1, 40 do
+    local name, _, count, _, _, _, _, _, _, spellId = UnitDebuff(unit, i)
+    if not name then break end
+    local label, sev = nil, 0
+    local known = AMP_BY_NAME[name:lower()]
+    if known then
+      label, sev = known[1], known[2]
+    elseif spellId then
+      local amp = ampCache[spellId]
+      if amp == nil then amp = tooltipSaysAmp(unit, i); ampCache[spellId] = amp end
+      if amp then label, sev = name, 20 end
+    end
+    if label and sev > (bestSev or -1) then
+      bestLabel, bestSev, bestStacks = label, sev, (count and count > 0) and count or 1
+    end
+  end
+  return bestLabel, bestStacks
+end
+
+--=========================================================================
 -- Display
 --=========================================================================
 local anchor = CreateFrame("Frame", "PallyHelperAnchor", UIParent)
-anchor:SetSize(224, 52)
+anchor:SetSize(224, 68)
 anchor:SetClampedToScreen(true)
 anchor:EnableMouse(true)
 anchor:SetMovable(true)
@@ -353,6 +424,11 @@ barText:SetPoint("CENTER")
 local addsText = anchor:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 addsText:SetPoint("TOP", bar, "BOTTOM", 0, -3)
 
+local tankDebuffText = anchor:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+tankDebuffText:SetPoint("TOP", addsText, "BOTTOM", 0, -2)
+tankDebuffText:SetTextColor(1, 0.55, 0.1)
+tankDebuffText:Hide()
+
 local alertFS = anchor:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
 alertFS:SetPoint("BOTTOM", bar, "TOP", 0, 8)
 do
@@ -385,6 +461,7 @@ local wasCastNow = false
 local flashAlpha = 0
 local addsAcc = 0
 local cachedAdds, cachedTankName
+local cachedDebuff, cachedDebuffStacks
 
 local bigHitUntil, bigHitMsg = 0, ""
 
@@ -411,6 +488,11 @@ local function updateDisplay(elapsed)
     cachedTankName   = name
     if unit then currentTankMaxHP = UnitHealthMax(unit) end   -- keep last known if out of range
     cachedAdds = countAddsOnTank(guid, unit)
+    if DB.tankDebuffWatch then
+      cachedDebuff, cachedDebuffStacks = scanTankDebuffs(unit)
+    else
+      cachedDebuff = nil
+    end
   end
 
   -- --- big-hit alert -------------------------------------------------------
@@ -428,6 +510,17 @@ local function updateDisplay(elapsed)
     local col = (c == 0 and "ff888888") or (c <= 2 and "ff40ff40")
              or (c <= 4 and "ffffff40") or "ffff4040"
     addsText:SetFormattedText("|c%sadds on tank: %d|r", col, c)
+  end
+
+  if cachedDebuff then
+    if cachedDebuffStacks and cachedDebuffStacks > 1 then
+      tankDebuffText:SetFormattedText("\226\154\160 %s x%d", cachedDebuff, cachedDebuffStacks)
+    else
+      tankDebuffText:SetFormattedText("\226\154\160 %s", cachedDebuff)
+    end
+    tankDebuffText:Show()
+  elseif tankDebuffText:IsShown() then
+    tankDebuffText:Hide()
   end
 
   -- --- swing timer ------------------------------------------------------
@@ -572,6 +665,10 @@ SlashCmdList.PALLYHELPER = function(msg)
     DB.bigHitSound = not DB.bigHitSound
     pos("big-hit sound " .. (DB.bigHitSound and "on" or "off"))
 
+  elseif cmd == "debuffs" then
+    DB.tankDebuffWatch = not DB.tankDebuffWatch
+    pos("tank debuff watch " .. (DB.tankDebuffWatch and "on" or "off"))
+
   elseif cmd == "bigpct" then
     local n = tonumber(rest)
     if n and n > 0 then
@@ -615,6 +712,8 @@ SlashCmdList.PALLYHELPER = function(msg)
     end
     pos(("=> nameplate onTank=%d | combatlog hitters(<%ds)=%d | shown=%s")
         :format(onTank, HITTER_WINDOW, hitters, tostring(countAddsOnTank(guid, unit))))
+    local dl, ds = scanTankDebuffs(unit)
+    pos(("tank debuff: %s%s"):format(tostring(dl), ds and (" x" .. ds) or ""))
 
   elseif cmd == "reset" then
     wipe(DB)                                   -- also clears nil-by-default keys
@@ -627,7 +726,7 @@ SlashCmdList.PALLYHELPER = function(msg)
 
   else
     pos("commands: (none)=toggle  lock  settank  cleartank  spell flash|holy  casttime <ms>|auto  offset <s>  sound")
-    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  diag  reset")
+    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  debuffs  diag  reset")
   end
 end
 
