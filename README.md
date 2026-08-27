@@ -9,9 +9,11 @@ Holy Paladin helper for **WoW TBC / Anniversary (2.5.x)**.
   set % of their health.
 - **Adds-on-tank counter** – how many mobs are on the tank (combat-log based,
   works at any range).
-- **Tank-debuff watch** – a line when the tank has an armor-shred, damage-taken,
-  or healing-reduction debuff (Sunder stacks, Faerie Fire, Meteor Slash, Mark
-  of Hydross, Enfeeble, Mortal Strike, …).
+- **Tank-debuff watch** – a line when the tank has a debuff that makes it take
+  more damage: armor shred / damage-taken up / healing-reduction (Sunder,
+  Faerie Fire, Meteor Slash, Mark of Hydross, Enfeeble, Mortal Strike, …),
+  **or** loss of control (stun / fear / incapacitate) — a stunned paladin
+  can't block, dodge or parry, so every hit lands full.
 
 ---
 
@@ -100,15 +102,18 @@ dual-wielders, and for bosses that get hasted or slowed mid-fight.
 ## How the tank-debuff watch works
 
 Every ~0.15s it scans the tank's debuffs (needs a live unit for the tank — in
-your group, or the `targettarget` fallback). A debuff is flagged if:
+your group, or the `targettarget` fallback). Two categories:
 
-- its name is in the built-in list (`AMP_BY_NAME` in the Lua — armor shred,
-  raid damage-taken amps, healing-reduction), **or**
-- its tooltip text contains "damage taken … increas…" or "armor … reduc…".
+- **amp** — armor shred / damage-taken up / −healing. Flagged if the name is in
+  `AMP_BY_NAME` or the tooltip says "damage taken … increas…" / "armor … reduc…".
+  Shown orange as `⚠ <name> xN` (N = stacks).
+- **loc** — stun / fear / incapacitate. Flagged if the name is in `LOC_BY_NAME`
+  or the tooltip says "stunned", "incapacitated", "unable to act", "asleep",
+  "feared", etc. Shown red as `⚠ CAN'T MITIGATE - <name>`.
 
-The single most severe one is shown as `⚠ <name> xN` (N = stacks). Tooltip
-results are cached per spell, so the scan is cheap after the first sighting.
-Add missing spells to `AMP_BY_NAME` with a severity number.
+Only the single most severe debuff is shown. Tooltip results are cached per
+spell, so the scan is cheap after the first sighting. Add missing spells to
+`AMP_BY_NAME` / `LOC_BY_NAME` in the Lua.
 
 ## How the big-hit alert works
 

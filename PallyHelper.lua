@@ -311,17 +311,19 @@ local function countAddsOnTank(tankGUID, tankUnit)
 end
 
 --=========================================================================
--- Tank debuff watch  --  "is the tank taking extra damage right now?"
+-- Tank debuff watch  --  is the tank taking extra damage / unable to mitigate?
 --=========================================================================
--- name (lowercased) -> { short label, severity }.  Higher severity wins the
--- one line we show.  Covers armor shred, damage-taken amps, and (because a
--- healer must know) healing-reduction debuffs.
+-- Two categories:
+--   "amp" - armor shred / damage-taken up / healing-reduction
+--   "loc" - loss of control: a stunned/feared/incapacitated paladin can't
+--           block, dodge or parry, so every hit lands in full.
+-- name(lower) -> { short label, severity }.  Highest severity wins the line.
 local AMP_BY_NAME = {
   ["enfeeble"]              = { "ENFEEBLE - heals capped!", 100 }, -- Prince Malchezaar
-  ["mortal strike"]        = { "Mortal Strike (-50% heals)", 92 },
-  ["mortal wound"]         = { "Mortal Wound (-healing)",    92 },
-  ["aimed shot"]           = { "Aimed Shot (-50% heals)",    90 },
-  ["wound poison"]         = { "Wound Poison (-healing)",    88 },
+  ["mortal strike"]        = { "Mortal Strike (-50% heals)", 90 },
+  ["mortal wound"]         = { "Mortal Wound (-healing)",    90 },
+  ["aimed shot"]           = { "Aimed Shot (-50% heals)",    88 },
+  ["wound poison"]         = { "Wound Poison (-healing)",    86 },
   ["meteor slash"]         = { "Meteor Slash",               82 }, -- Brutallus
   ["flame buffet"]         = { "Flame Buffet",               78 }, -- Al'ar
   ["mark of hydross"]      = { "Mark of Hydross",            78 },
@@ -333,13 +335,29 @@ local AMP_BY_NAME = {
   ["expose armor"]         = { "Expose Armor",               38 },
   ["sunder armor"]         = { "Sunder Armor",               32 },
 }
+-- name(lower) -> control type (common PvE ones; the tooltip check catches the rest)
+local LOC_BY_NAME = {
+  ["hammer of justice"] = "Stunned", ["war stomp"]        = "Stunned",
+  ["knockdown"]         = "Stunned", ["bash"]             = "Stunned",
+  ["charge"]            = "Stunned", ["ground slam"]      = "Stunned",  -- Gruul
+  ["cave in"]           = "Stunned", ["shatter"]          = "Stunned",  -- Gruul
+  ["intimidating shout"]= "Feared",  ["psychic scream"]   = "Feared",
+  ["fear"]              = "Feared",  ["terrifying screech"] = "Feared",
+}
+local LOC_SEV = { Stunned = 95, Incapacitated = 93, Feared = 88 }
 
 local scanTip = CreateFrame("GameTooltip", "PallyHelperScanTip", nil, "GameTooltipTemplate")
 scanTip:SetOwner(UIParent, "ANCHOR_NONE")
 
-local ampCache = {}   -- spellId -> bool (tooltip says "damage taken increased" / "armor reduced")
+local catCache = {}   -- spellId -> "amp" | "loc" | false
+local LOC_WORDS = {
+  "stunned", "incapacitat", "unable to act", "asleep", "cannot act",
+  "frozen", "feared", "in fear", "fleeing", "horrified", "banished",
+  "hypnoti", "unable to move, attack",
+}
 
-local function tooltipSaysAmp(unit, index)
+-- "amp" | "loc" | false, from the debuff's tooltip text
+local function classifyByTooltip(unit, index)
   scanTip:SetOwner(UIParent, "ANCHOR_NONE")
   scanTip:ClearLines()
   scanTip:SetUnitDebuff(unit, index)
@@ -348,36 +366,46 @@ local function tooltipSaysAmp(unit, index)
     local t  = fs and fs:GetText()
     if t then
       t = t:lower()
-      if (t:find("damage taken") and t:find("increas"))
-         or (t:find("armor") and (t:find("reduc") or t:find("decreas") or t:find("lower"))) then
-        return true
+      for _, w in ipairs(LOC_WORDS) do
+        if t:find(w, 1, true) then return "loc" end
+      end
+      if (t:find("damage taken", 1, true) and t:find("increas", 1, true))
+         or (t:find("armor", 1, true) and (t:find("reduc", 1, true)
+             or t:find("decreas", 1, true) or t:find("lower", 1, true))) then
+        return "amp"
       end
     end
   end
   return false
 end
 
--- Returns: label (or nil), stackCount
+-- Returns: label, stacks, category ("amp"|"loc")   or nil
 local function scanTankDebuffs(unit)
   if not unit or not UnitExists(unit) then return nil end
-  local bestLabel, bestSev, bestStacks
+  local bLabel, bSev, bStacks, bCat
   for i = 1, 40 do
     local name, _, count, _, _, _, _, _, _, spellId = UnitDebuff(unit, i)
     if not name then break end
-    local label, sev = nil, 0
-    local known = AMP_BY_NAME[name:lower()]
-    if known then
-      label, sev = known[1], known[2]
+    local key = name:lower()
+    local label, sev, cat
+
+    local kl, ka = LOC_BY_NAME[key], AMP_BY_NAME[key]
+    if kl then
+      label, sev, cat = name .. " (" .. kl .. ")", (LOC_SEV[kl] or 90), "loc"
+    elseif ka then
+      label, sev, cat = ka[1], ka[2], "amp"
     elseif spellId then
-      local amp = ampCache[spellId]
-      if amp == nil then amp = tooltipSaysAmp(unit, i); ampCache[spellId] = amp end
-      if amp then label, sev = name, 20 end
+      local c = catCache[spellId]
+      if c == nil then c = classifyByTooltip(unit, i); catCache[spellId] = c end
+      if c == "loc" then label, sev, cat = name, 84, "loc"
+      elseif c == "amp" then label, sev, cat = name, 20, "amp" end
     end
-    if label and sev > (bestSev or -1) then
-      bestLabel, bestSev, bestStacks = label, sev, (count and count > 0) and count or 1
+
+    if label and sev > (bSev or -1) then
+      bLabel, bSev, bStacks, bCat = label, sev, (count and count > 0) and count or 1, cat
     end
   end
-  return bestLabel, bestStacks
+  return bLabel, bStacks, bCat
 end
 
 --=========================================================================
@@ -461,7 +489,7 @@ local wasCastNow = false
 local flashAlpha = 0
 local addsAcc = 0
 local cachedAdds, cachedTankName
-local cachedDebuff, cachedDebuffStacks
+local cachedDebuff, cachedDebuffStacks, cachedDebuffCat
 
 local bigHitUntil, bigHitMsg = 0, ""
 
@@ -489,7 +517,7 @@ local function updateDisplay(elapsed)
     if unit then currentTankMaxHP = UnitHealthMax(unit) end   -- keep last known if out of range
     cachedAdds = countAddsOnTank(guid, unit)
     if DB.tankDebuffWatch then
-      cachedDebuff, cachedDebuffStacks = scanTankDebuffs(unit)
+      cachedDebuff, cachedDebuffStacks, cachedDebuffCat = scanTankDebuffs(unit)
     else
       cachedDebuff = nil
     end
@@ -513,10 +541,16 @@ local function updateDisplay(elapsed)
   end
 
   if cachedDebuff then
-    if cachedDebuffStacks and cachedDebuffStacks > 1 then
-      tankDebuffText:SetFormattedText("\226\154\160 %s x%d", cachedDebuff, cachedDebuffStacks)
+    if cachedDebuffCat == "loc" then
+      tankDebuffText:SetTextColor(1, 0.25, 0.25)
+      tankDebuffText:SetFormattedText("\226\154\160 CAN'T MITIGATE - %s", cachedDebuff)
     else
-      tankDebuffText:SetFormattedText("\226\154\160 %s", cachedDebuff)
+      tankDebuffText:SetTextColor(1, 0.55, 0.1)
+      if cachedDebuffStacks and cachedDebuffStacks > 1 then
+        tankDebuffText:SetFormattedText("\226\154\160 %s x%d", cachedDebuff, cachedDebuffStacks)
+      else
+        tankDebuffText:SetFormattedText("\226\154\160 %s", cachedDebuff)
+      end
     end
     tankDebuffText:Show()
   elseif tankDebuffText:IsShown() then
@@ -712,8 +746,8 @@ SlashCmdList.PALLYHELPER = function(msg)
     end
     pos(("=> nameplate onTank=%d | combatlog hitters(<%ds)=%d | shown=%s")
         :format(onTank, HITTER_WINDOW, hitters, tostring(countAddsOnTank(guid, unit))))
-    local dl, ds = scanTankDebuffs(unit)
-    pos(("tank debuff: %s%s"):format(tostring(dl), ds and (" x" .. ds) or ""))
+    local dl, ds, dc = scanTankDebuffs(unit)
+    pos(("tank debuff: [%s] %s%s"):format(tostring(dc), tostring(dl), (ds and ds > 1) and (" x" .. ds) or ""))
 
   elseif cmd == "reset" then
     wipe(DB)                                   -- also clears nil-by-default keys
