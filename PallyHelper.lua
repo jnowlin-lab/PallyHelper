@@ -120,11 +120,14 @@ local function recordSwing(guid, name)
   local s = swings[guid]
   if s then
     local dt = now - s.last
-    if dt > 0.3 and dt < 8 then
+    -- Skip this interval as a period sample if a cast happened since the last
+    -- swing -- casts delay swings, so the gap is not a real weapon-speed reading.
+    if not s.castDirty and dt > 0.3 and dt < 8 then
       s.samples[#s.samples + 1] = dt
       if #s.samples > 5 then table.remove(s.samples, 1) end
       s.period = median(s.samples)
     end
+    s.castDirty = nil
     s.last = now
   else
     swings[guid] = { last = now, period = nil, samples = {}, name = name }
@@ -214,6 +217,35 @@ local function activeEnemyGUID()
     if UnitExists(u) and not UnitIsDead(u) then return UnitGUID(u) end
   end
   return nil
+end
+
+-- A unit token (target / boss1-4 / focus) that resolves to this GUID, if any.
+local function guidToEnemyUnit(guid)
+  if not guid then return nil end
+  if UnitGUID("target") == guid then return "target" end
+  for i = 1, 4 do
+    if UnitGUID("boss" .. i) == guid then return "boss" .. i end
+  end
+  if UnitGUID("focus") == guid then return "focus" end
+  return nil
+end
+
+-- If the tracked enemy is mid-cast/channel: returns spellName, fractionDone,
+-- secondsLeft. Otherwise nil.
+local function enemyCastState(guid)
+  local u = guidToEnemyUnit(guid)
+  if not u then return nil end
+  local name, _, _, startMS, endMS = UnitCastingInfo(u)
+  if not name then
+    name, _, _, startMS, endMS = UnitChannelInfo(u)
+  end
+  if not name or not endMS then return nil end
+  local now   = GetTime()
+  local left  = endMS / 1000 - now
+  local total = (endMS - (startMS or endMS)) / 1000
+  if left <= 0 then return nil end
+  local frac = (total > 0) and (1 - left / total) or 0
+  return name, frac, left
 end
 
 --=========================================================================
@@ -566,6 +598,23 @@ local function updateDisplay(elapsed)
     barText:SetText("no swing data")
     marker:Hide()
     wasCastNow = false
+    return
+  end
+
+  -- Boss is casting: show the cast, hold the swing prediction, don't advise a
+  -- heal into a swing that the cast is delaying anyway.
+  local castName, castFrac, castLeft = enemyCastState(guid)
+  if castName then
+    s.castDirty = true
+    bar:SetValue(castFrac)
+    bar:SetStatusBarColor(0.6, 0.3, 0.9)
+    barText:SetFormattedText("CASTING: %s  %.1fs", castName, castLeft)
+    marker:Hide()
+    wasCastNow = false
+    if flashAlpha > 0 then
+      flashAlpha = math.max(0, flashAlpha - (elapsed or 0) * 2.2)
+      flash:SetAlpha(flashAlpha)
+    end
     return
   end
 
