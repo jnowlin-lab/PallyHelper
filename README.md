@@ -7,6 +7,9 @@ Holy Paladin helper for **WoW TBC / Anniversary (2.5.x)**.
 - **Big-hit alert** – flashes a red **HEAL NOW** over the bar the instant the
   tank eats a crushing blow, a melee crit, a big special, or any hit over a
   set % of their health.
+- **Danger-swing warning** – the swing bar goes red **!! LETHAL !!** when the
+  tank's current health is at or below the biggest melee hit they've taken this
+  fight (× a headroom factor) — i.e. the next swing could kill them.
 - **Adds-on-tank counter** – how many mobs are on the tank (combat-log based,
   works at any range).
 - **Tank-debuff watch** – a line when the tank has a debuff that makes it take
@@ -74,7 +77,9 @@ about one swing after it reaches the tank.
 | `/ph bigsound` | toggle the big-hit sound (on by default – it's a rare event, so it isn't the annoying one) |
 | `/ph bigpct <percent>` | alert on any hit ≥ this % of the tank's max health (default 22) |
 | `/ph debuffs` | toggle the tank-debuff watch line (on by default) |
-| `/ph diag` | dump tank/nameplate/threat/debuff state to chat |
+| `/ph danger` | toggle the **!! LETHAL !!** danger-swing warning (on by default) |
+| `/ph dangerfactor <n>` | headroom on the danger check (default 1.15) |
+| `/ph diag` | dump tank/nameplate/threat/debuff/danger state to chat |
 | `/ph reset` | reset settings + position |
 
 ---
@@ -105,6 +110,23 @@ is given (casts delay the next swing, so timing a heal into it is unreliable).
 The gap that spans a cast is not used as a swing-period sample. When the cast
 ends the normal prediction resumes and recalibrates on the next real swing.
 Cast detection needs a unit for the boss (`target`, `boss1..4`, or `focus`).
+
+## How the danger-swing warning works
+
+Every `SWING_DAMAGE` on the tank is recorded (last 6). `dangerHitSize()` is the
+biggest of those — a proxy for how hard the next swing could land (a crushing
+blow is already in there if one happened). Each frame:
+
+```
+LETHAL  ⇔  tank current HP  ≤  dangerHitSize() × dangerFactor
+```
+
+`dangerFactor` defaults to **1.15** (`/ph dangerfactor`). When true the swing
+bar turns solid red and reads `!! LETHAL !! <secs>`, overriding CAST NOW.
+
+Needs a live unit for the tank to read current HP (group / nameplate /
+`targettarget`); resets each fight. It's a heuristic, not a guarantee — an
+un-seen crush or a stacked special can still exceed the estimate.
 
 ## How the tank-debuff watch works
 

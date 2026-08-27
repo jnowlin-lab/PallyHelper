@@ -35,6 +35,8 @@ local DEFAULTS = {
   bigHitPct       = 0.22,     -- also alert on any hit >= this fraction of the tank's max health
   bigHitDuration  = 1.6,      -- how long the alert stays up (seconds)
   tankDebuffWatch = true,     -- show a line when the tank has an armor/damage-taken/-healing debuff
+  dangerWarn      = true,     -- flag the swing bar red when the next hit could kill the tank
+  dangerFactor    = 1.15,    -- "lethal" if tank HP <= recent biggest melee hit * this
   tankGUID        = nil,
   tankName        = nil,
   point           = { "CENTER", "CENTER", 0, 150 },  -- { point, relativePoint, x, y }
@@ -105,8 +107,11 @@ local swings = {}
 local tankHitters = {}
 local HITTER_WINDOW = 5   -- seconds since last hit before a mob stops counting
 
+-- recent raw melee-hit amounts on the tank (for danger-swing prediction)
+local tankMeleeHits = {}
+
 -- forward declarations (used by the combat log handler, defined lower down)
-local currentTankGUID, currentTankMaxHP
+local currentTankGUID, currentTankMaxHP, currentTankHP
 local triggerBigHit
 
 local function isTrackableEnemy(guid)
@@ -182,6 +187,15 @@ local function onCombatLog()
        or sub == "RANGE_DAMAGE"  or sub == "RANGE_MISSED"
        or sub == "SPELL_PERIODIC_DAMAGE") then
     tankHitters[srcGUID] = GetTime()
+  end
+
+  -- --- record melee hit sizes on the tank (danger-swing prediction) -----
+  if currentTankGUID and dstGUID == currentTankGUID and sub == "SWING_DAMAGE" then
+    local amt = select(12, CombatLogGetCurrentEventInfo())
+    if type(amt) == "number" and amt > 0 then
+      tankMeleeHits[#tankMeleeHits + 1] = amt
+      if #tankMeleeHits > 6 then table.remove(tankMeleeHits, 1) end
+    end
   end
 
   -- --- big hit on the tank ---------------------------------------------
@@ -346,6 +360,16 @@ local function countAddsOnTank(tankGUID, tankUnit)
   local count = 0
   for _ in pairs(seen) do count = count + 1 end
   return count
+end
+
+-- Biggest recent melee hit on the tank -- our proxy for "how hard the next
+-- swing could land". nil until we've seen a hit this fight.
+local function dangerHitSize()
+  local mx = 0
+  for i = 1, #tankMeleeHits do
+    if tankMeleeHits[i] > mx then mx = tankMeleeHits[i] end
+  end
+  return mx > 0 and mx or nil
 end
 
 --=========================================================================
@@ -524,6 +548,7 @@ end
 
 local lastSoundSwing
 local wasCastNow = false
+local wasDanger = false
 local flashAlpha = 0
 local addsAcc = 0
 local cachedAdds, cachedTankName
@@ -552,7 +577,12 @@ local function updateDisplay(elapsed)
     local unit, guid, name = resolveTankUnit()
     currentTankGUID  = guid
     cachedTankName   = name
-    if unit then currentTankMaxHP = UnitHealthMax(unit) end   -- keep last known if out of range
+    if unit then
+      currentTankMaxHP = UnitHealthMax(unit)   -- keep last known if out of range
+      currentTankHP    = UnitHealth(unit)
+    else
+      currentTankHP    = nil
+    end
     cachedAdds = countAddsOnTank(guid, unit)
     if DB.tankDebuffWatch then
       cachedDebuff, cachedDebuffStacks, cachedDebuffCat = scanTankDebuffs(unit)
@@ -603,7 +633,7 @@ local function updateDisplay(elapsed)
     bar:SetStatusBarColor(0.3, 0.3, 0.3)
     barText:SetText("no swing data")
     marker:Hide()
-    wasCastNow = false
+    wasCastNow, wasDanger = false, false
     return
   end
 
@@ -616,7 +646,7 @@ local function updateDisplay(elapsed)
     bar:SetStatusBarColor(0.6, 0.3, 0.9)
     barText:SetFormattedText("CASTING: %s  %.1fs", castName, castLeft)
     marker:Hide()
-    wasCastNow = false
+    wasCastNow, wasDanger = false, false
     if flashAlpha > 0 then
       flashAlpha = math.max(0, flashAlpha - (elapsed or 0) * 2.2)
       flash:SetAlpha(flashAlpha)
@@ -647,7 +677,16 @@ local function updateDisplay(elapsed)
   -- brief bolt when a parry just hastened this swing
   local parryTag = (s.parryAt and (now - s.parryAt) < 0.6) and "|cffffcc00\226\154\161|r " or ""
 
-  if castNow then
+  -- danger swing: could the next hit kill the tank at its current health?
+  local hitSize = dangerHitSize()
+  local danger  = DB.dangerWarn and currentTankHP and currentTankHP > 0 and hitSize
+                  and currentTankHP <= hitSize * (DB.dangerFactor or 1.15)
+
+  if danger then
+    bar:SetStatusBarColor(0.9, 0.05, 0.05)
+    barText:SetFormattedText("%s!! LETHAL !!  %.1f", parryTag, remain)
+    if not wasDanger then flashAlpha = 0.6 end
+  elseif castNow then
     bar:SetStatusBarColor(0.1, 1, 0.1)
     barText:SetFormattedText("%sCAST NOW  (%.1f)", parryTag, remain)
     if not wasCastNow then
@@ -662,6 +701,7 @@ local function updateDisplay(elapsed)
     barText:SetFormattedText("%s%s%.1fs -> next hit", parryTag, estimate and "~" or "", remain)
   end
   wasCastNow = castNow
+  wasDanger  = danger and true or false
 
   if flashAlpha > 0 then
     flashAlpha = math.max(0, flashAlpha - (elapsed or 0) * 2.2)   -- ~0.25s fade
@@ -761,6 +801,16 @@ SlashCmdList.PALLYHELPER = function(msg)
     DB.tankDebuffWatch = not DB.tankDebuffWatch
     pos("tank debuff watch " .. (DB.tankDebuffWatch and "on" or "off"))
 
+  elseif cmd == "danger" then
+    DB.dangerWarn = not DB.dangerWarn
+    pos("danger-swing warning " .. (DB.dangerWarn and "on" or "off"))
+
+  elseif cmd == "dangerfactor" then
+    local n = tonumber(rest)
+    if n and n > 0 then DB.dangerFactor = n
+      pos(("danger factor = %.2f  (LETHAL when tank HP <= biggest recent hit * %.2f)"):format(n, n))
+    else pos("usage: /ph dangerfactor <number>  (e.g. 1.15)") end
+
   elseif cmd == "bigpct" then
     local n = tonumber(rest)
     if n and n > 0 then
@@ -806,6 +856,9 @@ SlashCmdList.PALLYHELPER = function(msg)
         :format(onTank, HITTER_WINDOW, hitters, tostring(countAddsOnTank(guid, unit))))
     local dl, ds, dc = scanTankDebuffs(unit)
     pos(("tank debuff: [%s] %s%s"):format(tostring(dc), tostring(dl), (ds and ds > 1) and (" x" .. ds) or ""))
+    pos(("tank HP=%s/%s | biggest recent melee hit=%s | lethal if HP<=%s")
+        :format(tostring(currentTankHP), tostring(currentTankMaxHP), tostring(dangerHitSize()),
+                dangerHitSize() and math.floor(dangerHitSize() * (DB.dangerFactor or 1.15)) or "n/a"))
 
   elseif cmd == "reset" then
     wipe(DB)                                   -- also clears nil-by-default keys
@@ -818,7 +871,7 @@ SlashCmdList.PALLYHELPER = function(msg)
 
   else
     pos("commands: (none)=toggle  lock  settank  cleartank  spell flash|holy  casttime <ms>|auto  offset <s>  sound")
-    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  debuffs  diag  reset")
+    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  debuffs  danger  dangerfactor <n>  diag  reset")
   end
 end
 
@@ -845,7 +898,11 @@ boot:SetScript("OnEvent", function(_, event, arg1)
     cl:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
     cl:RegisterEvent("PLAYER_REGEN_ENABLED")   -- combat ended
     cl:SetScript("OnEvent", function(_, e)
-      if e == "PLAYER_REGEN_ENABLED" then wipe(tankHitters) else onCombatLog() end
+      if e == "PLAYER_REGEN_ENABLED" then
+        wipe(tankHitters); wipe(tankMeleeHits)
+      else
+        onCombatLog()
+      end
     end)
 
     -- keep target weapon-speed fresh if it changes (slows/haste on the boss)
