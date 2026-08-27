@@ -1,0 +1,8 @@
+## Interface: 20504
+## Title: PallyHelper
+## Notes: Holy Paladin helper - boss swing timer + adds-on-tank counter (TBC)
+## Author: Jason
+## Version: 0.1
+## SavedVariables: PallyHelperDB
+
+PallyHelper.lua
