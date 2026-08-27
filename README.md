@@ -99,6 +99,13 @@ Most TBC bosses swing on a flat **2.0s** timer, so that is the fallback and the
 value you'd lock with `/ph fixedperiod 2.0`. Measuring still matters for
 dual-wielders, and for bosses that get hasted or slowed mid-fight.
 
+**While the boss is casting**, the bar turns purple and shows
+`CASTING: <spell> <secs>` instead of a swing prediction, and no CAST NOW prompt
+is given (casts delay the next swing, so timing a heal into it is unreliable).
+The gap that spans a cast is not used as a swing-period sample. When the cast
+ends the normal prediction resumes and recalibrates on the next real swing.
+Cast detection needs a unit for the boss (`target`, `boss1..4`, or `focus`).
+
 ## How the tank-debuff watch works
 
 Every ~0.15s it scans the tank's debuffs (needs a live unit for the tank — in
