@@ -202,6 +202,15 @@ end
 --=========================================================================
 -- Tank resolution
 --=========================================================================
+-- The unit token for a nameplate frame. Field name varies by client, so try
+-- the known variants.
+local function plateUnit(p)
+  return p.namePlateUnitToken
+      or p.unit
+      or (p.UnitFrame and p.UnitFrame.unit)
+      or (p.namePlateUnitFrame and p.namePlateUnitFrame.unit)
+end
+
 -- Find a live unit token for a GUID (needed to read the tank's max health).
 local function guidToUnit(guid)
   if not guid then return nil end
@@ -220,7 +229,7 @@ local function guidToUnit(guid)
     end
   end
   for _, plate in ipairs(C_NamePlate.GetNamePlates()) do
-    local u = plate.namePlateUnitToken
+    local u = plateUnit(plate)
     if u and UnitGUID(u) == guid then return u end
   end
   return nil
@@ -261,7 +270,7 @@ local function countAddsOnTank(tankGUID, tankUnit)
   if not tankGUID and not tankUnit then return nil end
   local count = 0
   for _, plate in ipairs(C_NamePlate.GetNamePlates()) do
-    local u = plate.namePlateUnitToken
+    local u = plateUnit(plate)
     if u and UnitCanAttack("player", u) and not UnitIsDead(u) then
       local byTarget = tankGUID and UnitGUID(u .. "target") == tankGUID
       local byThreat = tankUnit and (UnitThreatSituation(u, tankUnit) or 0) >= 2
@@ -551,20 +560,26 @@ SlashCmdList.PALLYHELPER = function(msg)
     local plates = C_NamePlate.GetNamePlates()
     pos("visible nameplates: " .. #plates)
     local enemies, onTank = 0, 0
-    for _, p in ipairs(plates) do
-      local u = p.namePlateUnitToken
-      if u and UnitCanAttack("player", u) then
-        enemies = enemies + 1
-        local tt = u .. "target"
-        local ttName = UnitExists(tt) and (UnitName(tt) or "?") or "NONE"
-        local thr = unit and UnitThreatSituation(u, unit)
-        local hit = (guid and UnitGUID(tt) == guid) or (thr and thr >= 2)
+    for i, p in ipairs(plates) do
+      local u = plateUnit(p)
+      if not u then
+        pos(("  #%d NO TOKEN (npUT=%s unit=%s UF.unit=%s)"):format(i,
+            tostring(p.namePlateUnitToken), tostring(p.unit),
+            tostring(p.UnitFrame and p.UnitFrame.unit)))
+      else
+        local canAtk = UnitCanAttack("player", u)
+        local thr    = unit and UnitThreatSituation(u, unit)
+        local tt     = UnitExists(u .. "target") and (UnitName(u .. "target") or "?") or "NONE"
+        local hit    = canAtk and not UnitIsDead(u)
+                       and ((guid and UnitGUID(u .. "target") == guid) or (thr and thr >= 2))
+        if canAtk then enemies = enemies + 1 end
         if hit then onTank = onTank + 1 end
-        pos(("  %s | tgt=%s | threatVsTank=%s | onTank=%s")
-            :format(UnitName(u) or "?", ttName, tostring(thr), tostring(hit and true or false)))
+        pos(("  #%d %s=%s atk=%s dead=%s tgt=%s thr=%s hit=%s"):format(i,
+            u, tostring(UnitName(u)), tostring(canAtk), tostring(UnitIsDead(u)),
+            tt, tostring(thr), tostring(hit and true or false)))
       end
     end
-    pos(("=> enemy nameplates=%d  on tank=%d"):format(enemies, onTank))
+    pos(("=> enemies=%d onTank=%d"):format(enemies, onTank))
 
   elseif cmd == "reset" then
     wipe(DB)                                   -- also clears nil-by-default keys
