@@ -983,10 +983,10 @@ boot:SetScript("OnEvent", function(_, event, arg1)
 
     -- re-find which action button(s) hold the advisor spell
     local abf = CreateFrame("Frame")
-    abf:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
-    abf:RegisterEvent("LEARNED_SPELL_IN_TAB")
-    abf:RegisterEvent("PLAYER_ENTERING_WORLD")
-    abf:RegisterEvent("UPDATE_MACROS")
+    for _, ev in ipairs({ "ACTIONBAR_SLOT_CHANGED", "SPELLS_CHANGED",
+                          "PLAYER_ENTERING_WORLD", "UPDATE_MACROS" }) do
+      pcall(abf.RegisterEvent, abf, ev)   -- skip any event this client doesn't know
+    end
     abf:SetScript("OnEvent", function() refreshGlowButtons() end)
     refreshGlowButtons()
 
