@@ -7,6 +7,12 @@ Holy Paladin helper for **WoW TBC / Anniversary (2.5.x)**.
 - **Big-hit alert** – flashes a red **HEAL NOW** over the bar the instant the
   tank eats a crushing blow, a melee crit, a big special, or any hit over a
   set % of their health.
+- **Danger-swing warning** – the swing bar goes red **!! LETHAL !!** when the
+  tank's current health is at or below the biggest melee hit they've taken this
+  fight (× a headroom factor) — i.e. the next swing could kill them.
+- **Action-button glow** – the Blizzard spell-alert glow lights up your Flash /
+  Holy Light action button during the CAST NOW window, so you don't have to
+  watch the bar.
 - **Adds-on-tank counter** – how many mobs are on the tank (combat-log based,
   works at any range).
 - **Tank-debuff watch** – a line when the tank has a debuff that makes it take
@@ -74,7 +80,10 @@ about one swing after it reaches the tank.
 | `/ph bigsound` | toggle the big-hit sound (on by default – it's a rare event, so it isn't the annoying one) |
 | `/ph bigpct <percent>` | alert on any hit ≥ this % of the tank's max health (default 22) |
 | `/ph debuffs` | toggle the tank-debuff watch line (on by default) |
-| `/ph diag` | dump tank/nameplate/threat/debuff state to chat |
+| `/ph danger` | toggle the **!! LETHAL !!** danger-swing warning (on by default) |
+| `/ph dangerfactor <n>` | headroom on the danger check (default 1.15) |
+| `/ph glow` | toggle the action-button glow; reports how many buttons it found |
+| `/ph diag` | dump tank/nameplate/threat/debuff/danger state to chat |
 | `/ph reset` | reset settings + position |
 
 ---
@@ -105,6 +114,35 @@ is given (casts delay the next swing, so timing a heal into it is unreliable).
 The gap that spans a cast is not used as a swing-period sample. When the cast
 ends the normal prediction resumes and recalibrates on the next real swing.
 Cast detection needs a unit for the boss (`target`, `boss1..4`, or `focus`).
+
+## How the action-button glow works
+
+On login and whenever your bars change (`ACTIONBAR_SLOT_CHANGED`,
+`LEARNED_SPELL_IN_TAB`, `UPDATE_MACROS`), it scans the standard action bars plus
+Bartender4 / Dominos / ElvUI button names for a slot holding the advisor spell
+(`Flash of Light` or `Holy Light`). During the CAST NOW / LETHAL window it calls
+`ActionButton_ShowOverlayGlow` on those buttons and hides it otherwise.
+
+`/ph glow` toggles it and tells you how many buttons it matched — `0` means the
+spell isn't on a recognised bar (macros aren't parsed). Only the exact spell is
+matched, so a macro or a different rank on the bar won't glow.
+
+## How the danger-swing warning works
+
+Every `SWING_DAMAGE` on the tank is recorded (last 6). `dangerHitSize()` is the
+biggest of those — a proxy for how hard the next swing could land (a crushing
+blow is already in there if one happened). Each frame:
+
+```
+LETHAL  ⇔  tank current HP  ≤  dangerHitSize() × dangerFactor
+```
+
+`dangerFactor` defaults to **1.15** (`/ph dangerfactor`). When true the swing
+bar turns solid red and reads `!! LETHAL !! <secs>`, overriding CAST NOW.
+
+Needs a live unit for the tank to read current HP (group / nameplate /
+`targettarget`); resets each fight. It's a heuristic, not a guarantee — an
+un-seen crush or a stacked special can still exceed the estimate.
 
 ## How the tank-debuff watch works
 
@@ -138,8 +176,11 @@ read max health; the crushing/crit checks work regardless.
 
 - **First ~2 swings** have no measured period – it assumes 2.0s and shows a
   `~` until it has data.
-- **Parry-haste** (boss parries the tank → its next swing is sooner) is only
-  *approximated*. Fights where the tank parries a lot will drift.
+- **Parry-haste** (boss parries the tank → its next swing is sooner) is modelled
+  with the real rule: a parry shaves 40% of the weapon speed off the swing
+  timer, floored at 20% remaining, and never delays a swing. Stacks per parry.
+  A yellow `⚡` shows on the bar for ~0.6s when it fires. Still approximate — it
+  uses the measured/locked period as "weapon speed".
 - **Dynamic haste** other than Bloodlust/Heroism/Power Infusion is not
   modelled. Use `/ph casttime` to fine-tune, or add spell IDs to
   `HASTE_BUFFS` in the Lua.
@@ -151,12 +192,9 @@ read max health; the crushing/crit checks work regardless.
 
 ## Roadmap (things we can add next)
 
-- [ ] Detect the tank automatically as "the unit the boss is targeting".
-- [ ] Big-hit alert: also watch consecutive non-crush hits that stack into a danger window.
 - [ ] Show a second bar for `boss1` while your target is an add.
 - [ ] Per-boss saved weapon speeds (skip the 2-swing warmup).
-- [ ] Better parry-haste model (track the tank's parry events + 40%/20% rule).
-- [ ] "Time to next danger swing" using recent hit sizes vs tank health.
 - [ ] Option to also count adds targeting *you* (holy pally pulls via heals).
 - [ ] Ace3 options panel instead of slash commands.
-- [ ] Sound/where-to via LibSharedMedia; TellMeWhen-style glow on the action button.
+- [ ] Parse macros when matching the glow button.
+- [ ] Sound/media via LibSharedMedia.

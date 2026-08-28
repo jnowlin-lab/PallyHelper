@@ -35,6 +35,9 @@ local DEFAULTS = {
   bigHitPct       = 0.22,     -- also alert on any hit >= this fraction of the tank's max health
   bigHitDuration  = 1.6,      -- how long the alert stays up (seconds)
   tankDebuffWatch = true,     -- show a line when the tank has an armor/damage-taken/-healing debuff
+  dangerWarn      = true,     -- flag the swing bar red when the next hit could kill the tank
+  dangerFactor    = 1.15,    -- "lethal" if tank HP <= recent biggest melee hit * this
+  buttonGlow      = true,     -- glow the Flash/Holy Light action button during CAST NOW
   tankGUID        = nil,
   tankName        = nil,
   point           = { "CENTER", "CENTER", 0, 150 },  -- { point, relativePoint, x, y }
@@ -105,8 +108,11 @@ local swings = {}
 local tankHitters = {}
 local HITTER_WINDOW = 5   -- seconds since last hit before a mob stops counting
 
+-- recent raw melee-hit amounts on the tank (for danger-swing prediction)
+local tankMeleeHits = {}
+
 -- forward declarations (used by the combat log handler, defined lower down)
-local currentTankGUID, currentTankMaxHP
+local currentTankGUID, currentTankMaxHP, currentTankHP
 local triggerBigHit
 
 local function isTrackableEnemy(guid)
@@ -140,16 +146,22 @@ local function recordSwing(guid, name)
   end
 end
 
--- Approximate parry-haste: boss parried the tank, so its next swing comes
--- sooner (~40% off the remaining timer, floored near 20%). Not exact.
+-- Parry-haste: when a mob parries, 40% of its weapon speed is shaved off the
+-- current swing timer, but it can't be pushed below 20% of the weapon speed
+-- remaining. If the swing is already inside that 20% floor, a parry does
+-- nothing (it must never *delay* the swing). Multiple parries in one cycle
+-- stack because each call re-reads the current timer.
 local function applyParryHaste(guid)
   local s = swings[guid]
   if not s then return end
-  local now    = GetTime()
-  local period = s.period or 2.0
-  local nextSw = s.last + period
-  local hasted = math.max(now + 0.20 * period, nextSw - 0.40 * period)
-  s.last = hasted - period
+  local now       = GetTime()
+  local period    = (DB and DB.fixedPeriod) or s.period or 2.0
+  if period < 0.3 then period = 2.0 end
+  local remaining = (s.last + period) - now
+  if remaining <= 0.20 * period then return end
+  local newRemaining = math.max(0.20 * period, remaining - 0.40 * period)
+  s.last   = now + newRemaining - period   -- so (s.last + period) == now + newRemaining
+  s.parryAt = now
 end
 
 local function onCombatLog()
@@ -176,6 +188,15 @@ local function onCombatLog()
        or sub == "RANGE_DAMAGE"  or sub == "RANGE_MISSED"
        or sub == "SPELL_PERIODIC_DAMAGE") then
     tankHitters[srcGUID] = GetTime()
+  end
+
+  -- --- record melee hit sizes on the tank (danger-swing prediction) -----
+  if currentTankGUID and dstGUID == currentTankGUID and sub == "SWING_DAMAGE" then
+    local amt = select(12, CombatLogGetCurrentEventInfo())
+    if type(amt) == "number" and amt > 0 then
+      tankMeleeHits[#tankMeleeHits + 1] = amt
+      if #tankMeleeHits > 6 then table.remove(tankMeleeHits, 1) end
+    end
   end
 
   -- --- big hit on the tank ---------------------------------------------
@@ -340,6 +361,16 @@ local function countAddsOnTank(tankGUID, tankUnit)
   local count = 0
   for _ in pairs(seen) do count = count + 1 end
   return count
+end
+
+-- Biggest recent melee hit on the tank -- our proxy for "how hard the next
+-- swing could land". nil until we've seen a hit this fight.
+local function dangerHitSize()
+  local mx = 0
+  for i = 1, #tankMeleeHits do
+    if tankMeleeHits[i] > mx then mx = tankMeleeHits[i] end
+  end
+  return mx > 0 and mx or nil
 end
 
 --=========================================================================
@@ -516,8 +547,55 @@ local function applyLockVisual()
   anchorBG:SetShown(not DB.locked)
 end
 
+--=========================================================================
+-- Action-button glow on the advisor spell (Blizzard spell-alert overlay)
+--=========================================================================
+local GLOW_BAR_PREFIXES = {
+  "ActionButton", "BonusActionButton", "MultiBarBottomLeftButton",
+  "MultiBarBottomRightButton", "MultiBarRightButton", "MultiBarLeftButton",
+  "BT4Button", "DominosActionButton",
+  "ElvUI_Bar1Button", "ElvUI_Bar2Button", "ElvUI_Bar3Button",
+  "ElvUI_Bar4Button", "ElvUI_Bar5Button", "ElvUI_Bar6Button",
+}
+local glowButtons, glowIsOn = {}, false
+
+local function advisorSpellName()
+  return (DB and DB.spell == "holy") and "Holy Light" or "Flash of Light"
+end
+
+local function refreshGlowButtons()
+  wipe(glowButtons)
+  local want = GetSpellInfo(advisorSpellName())
+  if not want then return end
+  for _, pfx in ipairs(GLOW_BAR_PREFIXES) do
+    for i = 1, 12 do
+      local b = _G[pfx .. i]
+      if b then
+        local slot = tonumber(b.action or (b.GetAttribute and b:GetAttribute("action")))
+        if slot and HasAction(slot) then
+          local atype, id = GetActionInfo(slot)
+          if atype == "spell" and id and GetSpellInfo(id) == want then
+            glowButtons[#glowButtons + 1] = b
+          end
+        end
+      end
+    end
+  end
+end
+
+local function setButtonGlow(on)
+  on = on and true or false
+  if on == glowIsOn then return end
+  glowIsOn = on
+  if on and #glowButtons == 0 then refreshGlowButtons() end
+  local fn = on and ActionButton_ShowOverlayGlow or ActionButton_HideOverlayGlow
+  if not fn then return end
+  for _, b in ipairs(glowButtons) do pcall(fn, b) end
+end
+
 local lastSoundSwing
 local wasCastNow = false
+local wasDanger = false
 local flashAlpha = 0
 local addsAcc = 0
 local cachedAdds, cachedTankName
@@ -546,7 +624,12 @@ local function updateDisplay(elapsed)
     local unit, guid, name = resolveTankUnit()
     currentTankGUID  = guid
     cachedTankName   = name
-    if unit then currentTankMaxHP = UnitHealthMax(unit) end   -- keep last known if out of range
+    if unit then
+      currentTankMaxHP = UnitHealthMax(unit)   -- keep last known if out of range
+      currentTankHP    = UnitHealth(unit)
+    else
+      currentTankHP    = nil
+    end
     cachedAdds = countAddsOnTank(guid, unit)
     if DB.tankDebuffWatch then
       cachedDebuff, cachedDebuffStacks, cachedDebuffCat = scanTankDebuffs(unit)
@@ -597,7 +680,8 @@ local function updateDisplay(elapsed)
     bar:SetStatusBarColor(0.3, 0.3, 0.3)
     barText:SetText("no swing data")
     marker:Hide()
-    wasCastNow = false
+    wasCastNow, wasDanger = false, false
+    setButtonGlow(false)
     return
   end
 
@@ -610,7 +694,8 @@ local function updateDisplay(elapsed)
     bar:SetStatusBarColor(0.6, 0.3, 0.9)
     barText:SetFormattedText("CASTING: %s  %.1fs", castName, castLeft)
     marker:Hide()
-    wasCastNow = false
+    wasCastNow, wasDanger = false, false
+    setButtonGlow(false)
     if flashAlpha > 0 then
       flashAlpha = math.max(0, flashAlpha - (elapsed or 0) * 2.2)
       flash:SetAlpha(flashAlpha)
@@ -638,9 +723,21 @@ local function updateDisplay(elapsed)
   if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
   bar:SetValue(frac)
 
-  if castNow then
+  -- brief bolt when a parry just hastened this swing
+  local parryTag = (s.parryAt and (now - s.parryAt) < 0.6) and "|cffffcc00\226\154\161|r " or ""
+
+  -- danger swing: could the next hit kill the tank at its current health?
+  local hitSize = dangerHitSize()
+  local danger  = DB.dangerWarn and currentTankHP and currentTankHP > 0 and hitSize
+                  and currentTankHP <= hitSize * (DB.dangerFactor or 1.15)
+
+  if danger then
+    bar:SetStatusBarColor(0.9, 0.05, 0.05)
+    barText:SetFormattedText("%s!! LETHAL !!  %.1f", parryTag, remain)
+    if not wasDanger then flashAlpha = 0.6 end
+  elseif castNow then
     bar:SetStatusBarColor(0.1, 1, 0.1)
-    barText:SetFormattedText("CAST NOW  (%.1f)", remain)
+    barText:SetFormattedText("%sCAST NOW  (%.1f)", parryTag, remain)
     if not wasCastNow then
       flashAlpha = 0.55                        -- silent visual pop on the rising edge
       if DB.sound and lastSoundSwing ~= s.last then
@@ -650,9 +747,11 @@ local function updateDisplay(elapsed)
     end
   else
     bar:SetStatusBarColor(0.2, 0.4, 1)
-    barText:SetFormattedText("%s%.1fs -> next hit", estimate and "~" or "", remain)
+    barText:SetFormattedText("%s%s%.1fs -> next hit", parryTag, estimate and "~" or "", remain)
   end
   wasCastNow = castNow
+  wasDanger  = danger and true or false
+  setButtonGlow(DB.buttonGlow and (castNow or danger))
 
   if flashAlpha > 0 then
     flashAlpha = math.max(0, flashAlpha - (elapsed or 0) * 2.2)   -- ~0.25s fade
@@ -682,6 +781,7 @@ SlashCmdList.PALLYHELPER = function(msg)
   if cmd == "" then
     DB.shown = not DB.shown
     anchor:SetShown(DB.shown)
+    if not DB.shown then setButtonGlow(false) end
     pos(DB.shown and "shown" or "hidden")
 
   elseif cmd == "lock" then
@@ -706,6 +806,8 @@ SlashCmdList.PALLYHELPER = function(msg)
     rest = rest:lower()
     if rest == "flash" or rest == "holy" then
       DB.spell = rest
+      setButtonGlow(false)
+      refreshGlowButtons()
       pos("advisor spell = " .. rest)
     else
       pos("usage: /ph spell flash | holy")
@@ -752,6 +854,27 @@ SlashCmdList.PALLYHELPER = function(msg)
     DB.tankDebuffWatch = not DB.tankDebuffWatch
     pos("tank debuff watch " .. (DB.tankDebuffWatch and "on" or "off"))
 
+  elseif cmd == "danger" then
+    DB.dangerWarn = not DB.dangerWarn
+    pos("danger-swing warning " .. (DB.dangerWarn and "on" or "off"))
+
+  elseif cmd == "glow" then
+    DB.buttonGlow = not DB.buttonGlow
+    if DB.buttonGlow then
+      refreshGlowButtons()
+      pos(("action-button glow on (%d button(s) found for %s)")
+          :format(#glowButtons, advisorSpellName()))
+    else
+      setButtonGlow(false)
+      pos("action-button glow off")
+    end
+
+  elseif cmd == "dangerfactor" then
+    local n = tonumber(rest)
+    if n and n > 0 then DB.dangerFactor = n
+      pos(("danger factor = %.2f  (LETHAL when tank HP <= biggest recent hit * %.2f)"):format(n, n))
+    else pos("usage: /ph dangerfactor <number>  (e.g. 1.15)") end
+
   elseif cmd == "bigpct" then
     local n = tonumber(rest)
     if n and n > 0 then
@@ -797,6 +920,9 @@ SlashCmdList.PALLYHELPER = function(msg)
         :format(onTank, HITTER_WINDOW, hitters, tostring(countAddsOnTank(guid, unit))))
     local dl, ds, dc = scanTankDebuffs(unit)
     pos(("tank debuff: [%s] %s%s"):format(tostring(dc), tostring(dl), (ds and ds > 1) and (" x" .. ds) or ""))
+    pos(("tank HP=%s/%s | biggest recent melee hit=%s | lethal if HP<=%s")
+        :format(tostring(currentTankHP), tostring(currentTankMaxHP), tostring(dangerHitSize()),
+                dangerHitSize() and math.floor(dangerHitSize() * (DB.dangerFactor or 1.15)) or "n/a"))
 
   elseif cmd == "reset" then
     wipe(DB)                                   -- also clears nil-by-default keys
@@ -809,7 +935,7 @@ SlashCmdList.PALLYHELPER = function(msg)
 
   else
     pos("commands: (none)=toggle  lock  settank  cleartank  spell flash|holy  casttime <ms>|auto  offset <s>  sound")
-    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  debuffs  diag  reset")
+    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  debuffs  danger  dangerfactor <n>  glow  diag  reset")
   end
 end
 
@@ -836,7 +962,11 @@ boot:SetScript("OnEvent", function(_, event, arg1)
     cl:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
     cl:RegisterEvent("PLAYER_REGEN_ENABLED")   -- combat ended
     cl:SetScript("OnEvent", function(_, e)
-      if e == "PLAYER_REGEN_ENABLED" then wipe(tankHitters) else onCombatLog() end
+      if e == "PLAYER_REGEN_ENABLED" then
+        wipe(tankHitters); wipe(tankMeleeHits)
+      else
+        onCombatLog()
+      end
     end)
 
     -- keep target weapon-speed fresh if it changes (slows/haste on the boss)
@@ -850,6 +980,15 @@ boot:SetScript("OnEvent", function(_, event, arg1)
         if v and v > 0 then s.period = v end
       end
     end)
+
+    -- re-find which action button(s) hold the advisor spell
+    local abf = CreateFrame("Frame")
+    for _, ev in ipairs({ "ACTIONBAR_SLOT_CHANGED", "SPELLS_CHANGED",
+                          "PLAYER_ENTERING_WORLD", "UPDATE_MACROS" }) do
+      pcall(abf.RegisterEvent, abf, ev)   -- skip any event this client doesn't know
+    end
+    abf:SetScript("OnEvent", function() refreshGlowButtons() end)
+    refreshGlowButtons()
 
     pos("loaded. /ph for options.")
   end
