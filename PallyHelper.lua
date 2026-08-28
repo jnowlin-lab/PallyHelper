@@ -38,6 +38,7 @@ local DEFAULTS = {
   dangerWarn      = true,     -- flag the swing bar red when the next hit could kill the tank
   dangerFactor    = 1.15,    -- "lethal" if tank HP <= recent biggest melee hit * this
   buttonGlow      = true,     -- glow the Flash/Holy Light action button during CAST NOW
+  castBar         = true,     -- show your own cast bar under the swing bar
   tankGUID        = nil,
   tankName        = nil,
   point           = { "CENTER", "CENTER", 0, 150 },  -- { point, relativePoint, x, y }
@@ -475,7 +476,7 @@ end
 -- Display
 --=========================================================================
 local anchor = CreateFrame("Frame", "PallyHelperAnchor", UIParent)
-anchor:SetSize(224, 68)
+anchor:SetSize(224, 88)
 anchor:SetClampedToScreen(true)
 anchor:EnableMouse(true)
 anchor:SetMovable(true)
@@ -512,8 +513,31 @@ flash:SetAlpha(0)
 local barText = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 barText:SetPoint("CENTER")
 
+-- your own cast bar, directly under the swing bar, same time axis
+local castBar = CreateFrame("StatusBar", nil, anchor)
+castBar:SetPoint("TOPLEFT", bar, "BOTTOMLEFT", 0, -1)
+castBar:SetPoint("TOPRIGHT", bar, "BOTTOMRIGHT", 0, -1)
+castBar:SetHeight(13)
+castBar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+castBar:SetMinMaxValues(0, 1)
+castBar:SetValue(0)
+castBar:Hide()
+
+local castBarBG = castBar:CreateTexture(nil, "BACKGROUND")
+castBarBG:SetAllPoints()
+castBarBG:SetColorTexture(0, 0, 0, 0.6)
+
+-- where the tracked enemy's next swing lands, projected onto the cast timeline
+local castSwingMark = castBar:CreateTexture(nil, "OVERLAY")
+castSwingMark:SetColorTexture(1, 0.9, 0.2, 1)
+castSwingMark:SetWidth(2)
+castSwingMark:Hide()
+
+local castBarText = castBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+castBarText:SetPoint("CENTER")
+
 local addsText = anchor:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-addsText:SetPoint("TOP", bar, "BOTTOM", 0, -3)
+addsText:SetPoint("TOP", castBar, "BOTTOM", 0, -3)
 
 local tankDebuffText = anchor:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 tankDebuffText:SetPoint("TOP", addsText, "BOTTOM", 0, -2)
@@ -603,6 +627,57 @@ local cachedDebuff, cachedDebuffStacks, cachedDebuffCat
 
 local bigHitUntil, bigHitMsg = 0, ""
 
+-- seconds until the tracked enemy's next melee swing, or nil (no data / casting)
+local function predictedSwingRemain()
+  local guid = activeEnemyGUID()
+  local s = guid and swings[guid]
+  if not s or enemyCastState(guid) then return nil end
+  local period = DB.fixedPeriod or s.period or 2.0
+  if period < 0.3 then period = 2.0 end
+  local remain = (s.last + period) - GetTime()
+  if remain < -0.35 then
+    remain = remain + math.ceil((-0.35 - remain) / period) * period
+  end
+  return remain
+end
+
+-- Draw your own cast bar (StatusBar under the swing bar) and project the
+-- tracked enemy's next swing onto its timeline as a yellow tick.
+local function updateCastBar()
+  if not DB.castBar then castBar:Hide(); castSwingMark:Hide(); return end
+  local name, _, _, startMS, endMS = UnitCastingInfo("player")
+  local channel = false
+  if not name then
+    name, _, _, startMS, endMS = UnitChannelInfo("player"); channel = true
+  end
+  if not name or not endMS or not startMS then
+    castBar:Hide(); castSwingMark:Hide(); return
+  end
+
+  local now     = GetTime()
+  local total   = (endMS - startMS) / 1000
+  local elapsed = now - startMS / 1000
+  local frac    = (total > 0) and (elapsed / total) or 0
+  if channel then frac = 1 - frac end
+  if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+  castBar:SetValue(frac)
+  castBar:SetStatusBarColor(channel and 0.3 or 0.9, channel and 0.7 or 0.75, 0.25)
+  castBarText:SetFormattedText("%s  %.1fs", name, math.max(0, endMS / 1000 - now))
+  castBar:Show()
+
+  local sr = predictedSwingRemain()
+  if sr and total > 0 then
+    local mfrac = (elapsed + sr) / total          -- swing moment in cast-bar space
+    if mfrac < 0 then mfrac = 0 elseif mfrac > 1 then mfrac = 1 end
+    castSwingMark:ClearAllPoints()
+    castSwingMark:SetPoint("TOP",    castBar, "TOPLEFT",    mfrac * castBar:GetWidth(), 0)
+    castSwingMark:SetPoint("BOTTOM", castBar, "BOTTOMLEFT", mfrac * castBar:GetWidth(), 0)
+    castSwingMark:Show()
+  else
+    castSwingMark:Hide()
+  end
+end
+
 -- assigns the forward-declared local
 function triggerBigHit(amount, crushing, critical)
   local tag = crushing and "CRUSHING" or (critical and "CRIT" or "BIG HIT")
@@ -671,6 +746,8 @@ local function updateDisplay(elapsed)
   elseif tankDebuffText:IsShown() then
     tankDebuffText:Hide()
   end
+
+  updateCastBar()
 
   -- --- swing timer ------------------------------------------------------
   local guid = activeEnemyGUID()
@@ -858,6 +935,11 @@ SlashCmdList.PALLYHELPER = function(msg)
     DB.dangerWarn = not DB.dangerWarn
     pos("danger-swing warning " .. (DB.dangerWarn and "on" or "off"))
 
+  elseif cmd == "castbar" then
+    DB.castBar = not DB.castBar
+    if not DB.castBar then castBar:Hide(); castSwingMark:Hide() end
+    pos("cast bar " .. (DB.castBar and "on" or "off"))
+
   elseif cmd == "glow" then
     DB.buttonGlow = not DB.buttonGlow
     if DB.buttonGlow then
@@ -935,7 +1017,7 @@ SlashCmdList.PALLYHELPER = function(msg)
 
   else
     pos("commands: (none)=toggle  lock  settank  cleartank  spell flash|holy  casttime <ms>|auto  offset <s>  sound")
-    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  debuffs  danger  dangerfactor <n>  glow  diag  reset")
+    pos("           fixedperiod <s>|auto  bighit  bigsound  bigpct <percent>  debuffs  danger  dangerfactor <n>  glow  castbar  diag  reset")
   end
 end
 

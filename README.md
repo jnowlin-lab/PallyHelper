@@ -13,6 +13,9 @@ Holy Paladin helper for **WoW TBC / Anniversary (2.5.x)**.
 - **Action-button glow** – the Blizzard spell-alert glow lights up your Flash /
   Holy Light action button during the CAST NOW window, so you don't have to
   watch the bar.
+- **Personal cast bar** – your own cast bar sits directly under the swing bar,
+  with a yellow tick showing where the tracked enemy's next swing lands on your
+  cast's timeline, so you can see the two line up.
 - **Adds-on-tank counter** – how many mobs are on the tank (combat-log based,
   works at any range).
 - **Tank-debuff watch** – a line when the tank has a debuff that makes it take
@@ -83,6 +86,7 @@ about one swing after it reaches the tank.
 | `/ph danger` | toggle the **!! LETHAL !!** danger-swing warning (on by default) |
 | `/ph dangerfactor <n>` | headroom on the danger check (default 1.15) |
 | `/ph glow` | toggle the action-button glow; reports how many buttons it found |
+| `/ph castbar` | toggle your personal cast bar under the swing bar (on by default) |
 | `/ph diag` | dump tank/nameplate/threat/debuff/danger state to chat |
 | `/ph reset` | reset settings + position |
 
@@ -114,6 +118,20 @@ is given (casts delay the next swing, so timing a heal into it is unreliable).
 The gap that spans a cast is not used as a swing-period sample. When the cast
 ends the normal prediction resumes and recalibrates on the next real swing.
 Cast detection needs a unit for the boss (`target`, `boss1..4`, or `focus`).
+
+## How the personal cast bar works
+
+A thin `StatusBar` under the swing bar, driven by `UnitCastingInfo` /
+`UnitChannelInfo` on the player. While you cast, a **yellow tick** marks where
+the tracked enemy's next swing falls on your cast's timeline
+(`(castElapsed + swingRemaining) / castTotal`, clamped to the bar):
+
+- tick near/at the **right edge** → your heal finishes right around the hit —
+  the timing you want.
+- tick well **inside** the bar → the hit lands before your heal completes.
+
+Hidden when you're not casting, or with `/ph castbar`. No tick while the boss
+is casting (no swing prediction then).
 
 ## How the action-button glow works
 
